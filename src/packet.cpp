@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "SimpleFIFO.h"
 #include "packet.h"
+#include "dds.h"
 #include <util/atomic.h>
 
 #define PHASE_BIT 8
@@ -162,7 +163,6 @@ bool AFSK::HDLCDecode::hdlcParse(bool bit, SimpleFIFO<uint8_t,AFSK_RX_FIFO_LEN> 
   
   demod_bits <<= 1;
   demod_bits |= bit ? 1 : 0;
-  
   // Flag
   if(demod_bits == HDLC_FRAME) {
     fifo->enqueue(HDLC_FRAME);
@@ -279,6 +279,7 @@ bool AFSK::Decoder::read() {
   while(rx_fifo.count()) {
     // Grab the character
     char c = rx_fifo.dequeue();
+	//Serial.println(c);
     bool escaped = false;
     if(c == HDLC_ESCAPE) { // We received an escaped byte, mark it
       escaped = true;
@@ -349,7 +350,8 @@ bool AFSK::Decoder::read() {
   }
   return retVal; // This is true if we parsed a packet in this flow
 }
-  
+
+#define AFSK_ADC_INPUT 2
 void AFSK::Decoder::start() {
   // Do this in start to allocate our first packet
   currentPacket = pBuf.makePacket(PACKET_MAX_LEN);
@@ -365,17 +367,23 @@ void AFSK::Decoder::start() {
   TCCR2B = (TCCR2B & ~(_BV(CS22) | _BV(CS21))) | _BV(CS20) | _BV(WGM22);
   
   OCR2A = pow(2,COMPARE_BITS)-1;
-  OCR2B = 0;
-  // Configure the ADC and Timer1 to trigger automatic interrupts
+  OCR2B = 0;*/
+  
+  
+  // This lets us use decoding functions that run at the same reference
+  // clock as the DDS.
+  // We use ICR1 as TOP and prescale by 8
+  // Note that this requires the DDS to be started as well
   TCCR1A = 0;
   TCCR1B = _BV(CS11) | _BV(WGM13) | _BV(WGM12);
-  ICR1 = ((F_CPU / 8) / REFCLK) - 1;
-  ADMUX = _BV(REFS0) | _BV(ADLAR) | 0; // Channel 0, shift result left (ADCH used)
-  DDRC &= ~_BV(0);
-  PORTC &= ~_BV(0);
-  DIDR0 |= _BV(0);
+  ICR1 = ((F_CPU / 8) / 9600) - 1; //TODO: get the actual refclk from dds
+  // NOTE: should divider be 1 or 8?
+  ADMUX = _BV(REFS0) | _BV(ADLAR) | AFSK_ADC_INPUT; // Channel AFSK_ADC_INPUT, shift result left (ADCH used)
+  DDRC &= ~_BV(AFSK_ADC_INPUT);
+  PORTC &= ~_BV(AFSK_ADC_INPUT);
+  DIDR0 |= _BV(AFSK_ADC_INPUT); // disable input buffer for ADC pin
   ADCSRB = _BV(ADTS2) | _BV(ADTS1) | _BV(ADTS0);
-  ADCSRA = _BV(ADEN) | _BV(ADSC) | _BV(ADATE) | _BV(ADIE) | _BV(ADPS2); // | _BV(ADPS0);  */
+  ADCSRA = _BV(ADEN) | _BV(ADSC) | _BV(ADATE) | _BV(ADIE) | _BV(ADPS2); // | _BV(ADPS0);
 }
   
 AFSK::PacketBuffer::PacketBuffer() {
@@ -727,7 +735,8 @@ void AFSK::timer() {
     tcnt = 0;
     PORTD &= ~_BV(6);
   } else {
-    decoder.process(((int8_t)(ADCH - 128)));
+    //decoder.process(((int8_t)(ADCH - 128)));
+    decoder.process((int8_t)(ADCH - 83));
   }
 }
 

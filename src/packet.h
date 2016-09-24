@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <SimpleFIFO.h>
 #include <DDS.h>
+#include <avr/pgmspace.h>
 
 #define SAMPLERATE 9600
 #define BITRATE    1200
@@ -181,6 +182,7 @@ public:
       nextByte = 0;
     }
     void setDDS(DDS *d) { dds = d; }
+	//int16 getReferenceClock() { return dds.getReferenceClock(); }
     volatile inline bool isSending() volatile { 
       return sending; 
     }
