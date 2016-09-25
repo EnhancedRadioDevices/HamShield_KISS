@@ -279,7 +279,6 @@ bool AFSK::Decoder::read() {
   while(rx_fifo.count()) {
     // Grab the character
     char c = rx_fifo.dequeue();
-	//Serial.println(c);
     bool escaped = false;
     if(c == HDLC_ESCAPE) { // We received an escaped byte, mark it
       escaped = true;
@@ -287,7 +286,7 @@ bool AFSK::Decoder::read() {
       //currentPacket->append(HDLC_ESCAPE); // Append without FCS
       c = rx_fifo.dequeue(); // Reset to the next character
     }
-    
+	
     // Append all the bytes
     // This will include unescaped HDLC_FRAME bytes
     if(c != HDLC_FRAME || escaped) // Append frame if it is escaped
