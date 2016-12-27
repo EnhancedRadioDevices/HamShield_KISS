@@ -11,11 +11,11 @@ uint16_t kissLen = 0;
 // KISS equipment, and look if we have anything to relay along
 void KISS::loop() {
   static bool currentlySending = false;
-  if(afsk.decoder.read() || afsk.rxPacketCount()) {
+  if(afsk->decoder.read() || afsk->rxPacketCount()) {
      // A true return means something was put onto the packet FIFO
      // If we actually have data packets in the buffer, process them all now
-     while(afsk.rxPacketCount()) {
-       AFSK::Packet *packet = afsk.getRXPacket();
+     while(afsk->rxPacketCount()) {
+       AFSK::Packet *packet = afsk->getRXPacket();
        if(packet) {
          writePacket(packet);
          AFSK::PacketBuffer::freePacket(packet);
@@ -34,7 +34,7 @@ void KISS::loop() {
            packet->appendFCS(kissBuffer[i]);
          }
          packet->finish();
-         afsk.encoder.putPacket(packet);
+         afsk->encoder.putPacket(packet);
        }
        kissLen = 0;
        inFrame = false;
@@ -57,15 +57,15 @@ void KISS::loop() {
          inFrame = true;
      }
    }
-   if(afsk.txReady()) {
+   if(afsk->txReady()) {
      radio->setModeTransmit();
      currentlySending = true;
-     if(!afsk.txStart()) { // Unable to start for some reason
+     if(!afsk->txStart()) { // Unable to start for some reason
        radio->setModeReceive();
        currentlySending = false;
      }
    }
-   if(currentlySending && afsk.encoder.isDone()) {
+   if(currentlySending && afsk->encoder.isDone()) {
     radio->setModeReceive();
     currentlySending = false;
   }

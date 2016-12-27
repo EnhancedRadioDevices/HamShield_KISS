@@ -11,26 +11,15 @@
 
 class KISS {
 public:
-  KISS(Stream *_io, HamShield *h, DDS *d) : io(_io), radio(h), dds(d) {}
+  KISS(Stream *_io, HamShield *h, DDS *d, AFSK *a) : io(_io), radio(h), dds(d), afsk(a) {}
   bool read();
-  AFSK afsk;
   void writePacket(AFSK::Packet *);
   void loop();
-  inline void isr() {
-    static uint8_t tcnt = 0;
-    TIFR1 = _BV(ICF1); // Clear the timer flag
-    dds->clockTick();
-    if(++tcnt == (DDS_REFCLK_DEFAULT/9600)) {
-      //PORTD |= _BV(2); // Diagnostic pin (D2)
-      afsk.timer();
-      tcnt = 0;
-    }
-    //PORTD &= ~(_BV(2));
-  }
 private:
   Stream *io;
   HamShield *radio;
   DDS *dds;
+  AFSK *afsk;
 };
 
 #endif /* _KISS_H_ */
