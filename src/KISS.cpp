@@ -23,7 +23,7 @@ void KISS::loop() {
      }
    }
    // Check if we have incoming data to turn into a packet
-   while(io->available()) {
+   while(currentlySending == false && io->available()) {
      uint8_t c = (uint8_t)io->read();
      if(c == KISS_FEND) {
        if(inFrame && kissLen > 0) {
