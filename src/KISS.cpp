@@ -1,8 +1,8 @@
 #include <HamShield.h>
-#include "packet.h"
+#include "AX25.h"
 #include "KISS.h"
 
-//AFSK::Packet kissPacket;
+//AX25::Packet kissPacket;
 bool inFrame = false;
 uint8_t kissBuffer[PACKET_MAX_LEN];
 uint16_t kissLen = 0;
@@ -11,14 +11,14 @@ uint16_t kissLen = 0;
 // KISS equipment, and look if we have anything to relay along
 void KISS::loop() {
   static bool currentlySending = false;
-  if(afsk->decoder.read() || afsk->rxPacketCount()) {
+  if(ax25->decoder.read() || ax25->rxPacketCount()) {
      // A true return means something was put onto the packet FIFO
      // If we actually have data packets in the buffer, process them all now
-     while(afsk->rxPacketCount()) {
-       AFSK::Packet *packet = afsk->getRXPacket();
+     while(ax25->rxPacketCount()) {
+       AX25::Packet *packet = ax25->getRXPacket();
        if(packet) {
          writePacket(packet);
-         AFSK::PacketBuffer::freePacket(packet);
+         AX25::PacketBuffer::freePacket(packet);
        }
      }
    }
@@ -28,13 +28,13 @@ void KISS::loop() {
      if(c == KISS_FEND) {
        if(inFrame && kissLen > 0) {
          int i;
-         AFSK::Packet *packet = AFSK::PacketBuffer::makePacket(PACKET_MAX_LEN);
+         AX25::Packet *packet = AX25::PacketBuffer::makePacket(PACKET_MAX_LEN);
          packet->start();
          for(i = 0; i < kissLen; i++) {
            packet->appendFCS(kissBuffer[i]);
          }
          packet->finish();
-         afsk->encoder.putPacket(packet);
+         ax25->encoder.putPacket(packet);
        }
        kissLen = 0;
        inFrame = false;
@@ -57,21 +57,21 @@ void KISS::loop() {
          inFrame = true;
      }
    }
-   if(afsk->txReady()) {
+   if(ax25->txReady()) {
      radio->setModeTransmit();
      currentlySending = true;
-     if(!afsk->txStart()) { // Unable to start for some reason
+     if(!ax25->txStart()) { // Unable to start for some reason
        radio->setModeReceive();
        currentlySending = false;
      }
    }
-   if(currentlySending && afsk->encoder.isDone()) {
+   if(currentlySending && ax25->encoder.isDone()) {
     radio->setModeReceive();
     currentlySending = false;
   }
 }
 
-void KISS::writePacket(AFSK::Packet *p) {
+void KISS::writePacket(AX25::Packet *p) {
   int i;
   io->write(KISS_FEND);
   io->write((uint8_t)0); // Host to TNC port identifier

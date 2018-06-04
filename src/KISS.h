@@ -2,7 +2,7 @@
 #define _KISS_H_
 
 #include <HamShield.h>
-#include "packet.h"
+#include "AX25.h"
 
 #define KISS_FEND 0xC0
 #define KISS_FESC 0xDB
@@ -11,15 +11,15 @@
 
 class KISS {
 public:
-  KISS(Stream *_io, HamShield *h, DDS *d, AFSK *a) : io(_io), radio(h), dds(d), afsk(a) {}
+  KISS(Stream *_io, HamShield *h, DDS *d, AX25 *a) : io(_io), radio(h), dds(d), ax25(a) {}
   bool read();
-  void writePacket(AFSK::Packet *);
+  void writePacket(AX25::Packet *);
   void loop();
 private:
   Stream *io;
   HamShield *radio;
   DDS *dds;
-  AFSK *afsk;
+  AX25 *ax25;
 };
 
 #endif /* _KISS_H_ */

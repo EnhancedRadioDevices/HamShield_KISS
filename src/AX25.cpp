@@ -1,36 +1,46 @@
 #include <Arduino.h>
 #include "SimpleFIFO.h"
-#include "packet.h"
-#include "dds.h"
+#include "AX25.h"
+#include "bell202.h"
 #include <util/atomic.h>
 
-#define PHASE_BIT 8
-#define PHASE_INC 1
-
-#define PHASE_MAX (SAMPLEPERBIT * PHASE_BIT)
-#define PHASE_THRES (PHASE_MAX / 2)
-
-#define BIT_DIFFER(bitline1, bitline2) (((bitline1) ^ (bitline2)) & 0x01)
-#define EDGE_FOUND(bitline)            BIT_DIFFER((bitline), (bitline) >> 1)
 
 #define PPOOL_SIZE 2
 
-#define AFSK_SPACE 2200
-#define AFSK_MARK  1200
 
 // Timers
 volatile unsigned long lastTx = 0;
 volatile unsigned long lastTxEnd = 0;
 volatile unsigned long lastRx = 0;
 
-#define T_BIT ((unsigned int)(SAMPLERATE/BITRATE))
+Bell202 afsk;
 
 #ifdef PACKET_PREALLOCATE
-SimpleFIFO<AFSK::Packet *,PPOOL_SIZE> preallocPool;
-AFSK::Packet preallocPackets[PPOOL_SIZE];
+SimpleFIFO<AX25::Packet *,PPOOL_SIZE> preallocPool;
+AX25::Packet preallocPackets[PPOOL_SIZE];
 #endif
 
-void AFSK::Encoder::process() {
+
+bool AX25::enabled() { return afsk.enabled(); }
+void AX25::start(DDS *d) { afsk.start(d); }
+
+// Determine what we want to do on this ADC tick.
+void AX25::timer() {
+  static uint8_t tcnt = 0;
+  if(++tcnt == T_BIT && afsk.isSending()) {
+    PORTD |= _BV(6);
+    // Only run the encoder every 8th tick
+    // This is actually DDS RefClk / 1200 = 8, set as T_BIT
+    // A different refclk needs a different value
+    encoder.process();
+    tcnt = 0;
+    PORTD &= ~_BV(6);
+  } else {
+    decoder.process((int8_t)(ADCH - ADC_OFFSET));
+  }
+}
+
+void AX25::Encoder::process() {
   // We're on the start of a byte position, so fetch one
   if(bitPosition == 0) {
     if(preamble) { // Still in preamble
@@ -105,20 +115,15 @@ void AFSK::Encoder::process() {
 
   // NRZI and AFSK uses toggling 0s, "no change" on 1
   // So, if not a 1, toggle to the opposite tone
+  bool currentTone = afsk.encoderGetTone();
   if(!currentBit)
     currentTone = !currentTone;
   
-  if(currentTone == 0) {
-    PORTD |= _BV(7);
-    dds->setFrequency(AFSK_SPACE);
-  } else {
-    PORTD &= ~_BV(7);
-    dds->setFrequency(AFSK_MARK);
-  }
+  afsk.encoderSetTone(currentTone);
 }
 
-bool AFSK::Encoder::start() {
-  if(!done || sending) {
+bool AX25::Encoder::start() {
+  if(!done || afsk.isSending()) {
     return false;
   }
   
@@ -137,28 +142,26 @@ bool AFSK::Encoder::start() {
   packet = 0x0; // No initial packet, find in the ISR
   currentBytePos = 0;
   maxTx = 3;
-  sending = true;
   nextByte = 0;
-  dds->setFrequency(0);
-  dds->on();
+  
+  afsk.encoderStart();
   return true;
 }
 
-void AFSK::Encoder::stop() {
+void AX25::Encoder::stop() {
   randomWait = 0;
-  sending = false;
   done = true;
-  dds->setFrequency(0);
-  dds->off();
+  
+  afsk.encoderStop();
 }
 
-AFSK::Decoder::Decoder() {
+AX25::Decoder::Decoder() {
   // Initialize the sampler delay line (phase shift)
   //for(unsigned char i = 0; i < SAMPLEPERBIT/2; i++)
   //  delay_fifo.enqueue(0);
 }
 
-bool AFSK::HDLCDecode::hdlcParse(bool bit, SimpleFIFO<uint8_t,AFSK_RX_FIFO_LEN> *fifo) {
+bool AX25::HDLCDecode::hdlcParse(bool bit, SimpleFIFO<uint8_t,AFSK_RX_FIFO_LEN> *fifo) {
   bool ret = true;
   
   demod_bits <<= 1;
@@ -205,70 +208,18 @@ bool AFSK::HDLCDecode::hdlcParse(bool bit, SimpleFIFO<uint8_t,AFSK_RX_FIFO_LEN> 
   return ret;
 }
 
-template <typename T, int size>
-class FastRing {
-private:
-  T ring[size];
-  uint8_t position;
-public:
-  FastRing(): position(0) {}
-  inline void write(T value) {
-    ring[(position++) & (size-1)] = value;
-  }
-  inline T read() const {
-    return ring[position & (size-1)];
-  }
-  inline T readn(uint8_t n) const {
-    return ring[(position + (~n+1)) & (size-1)];
-  }
-};
-// Create a delay line that's half the length of the bit cycle (-90 degrees)
-FastRing<uint8_t,(T_BIT/2)> delayLine;
-
 // Handle the A/D converter interrupt (hopefully quickly :)
-void AFSK::Decoder::process(int8_t curr_sample) {
-  // Run the same through the phase multiplier and butterworth filter
-  iir_x[0] = iir_x[1];
-  iir_x[1] = ((int8_t)delayLine.read() * curr_sample) >> 2;
-  iir_y[0] = iir_y[1];
-  iir_y[1] = iir_x[0] + iir_x[1] + (iir_y[0] >> 1) + (iir_y[0]>>3) + (iir_y[0]>>5);
-  
-  // Place this ADC sample into the delay line
-  delayLine.write(curr_sample);
-
-  // Shift the bit into place based on the output of the discriminator
-  sampled_bits <<= 1;
-  sampled_bits |= (iir_y[1] > 0) ? 1 : 0;  
-  
-  // If we found a 0/1 transition, adjust phases to track
-  if(EDGE_FOUND(sampled_bits)) {
-    if(curr_phase < PHASE_THRES)
-      curr_phase += PHASE_INC;
-    else
-      curr_phase -= PHASE_INC;
-  }
-  
-  // Move ahead in phase
-  curr_phase += PHASE_BIT;
-  
-  // If we've gone over the phase maximum, we should now have some data
-  if(curr_phase >= PHASE_MAX) {
-    curr_phase %= PHASE_MAX;
-    found_bits <<= 1;
+void AX25::Decoder::process(int8_t adc_val) {
+  bool parse_ready = afsk.decoderProcess(adc_val);  
     
-    // If we have 3 bits or more set, it's a positive bit
-    register uint8_t bits = sampled_bits & 0x07;
-    if(bits == 0x07 || bits == 0x06 || bits == 0x05 || bits == 0x03) {
-      found_bits |= 1;
-    }
-    
-    hdlc.hdlcParse(!EDGE_FOUND(found_bits), &rx_fifo); // Process it
+  if (parse_ready) {
+    hdlc.hdlcParse(!EDGE_FOUND(afsk.found_bits), &rx_fifo); // Process it
   }
 }
   
 // This routine uses a pre-allocated Packet structure
 // to save on the memory requirements of the stream data
-bool AFSK::Decoder::read() {
+bool AX25::Decoder::read() {
   bool retVal = false;
   if(!currentPacket) { // We failed a prior memory allocation
     currentPacket = pBuf.makePacket(PACKET_MAX_LEN);
@@ -350,42 +301,13 @@ bool AFSK::Decoder::read() {
   return retVal; // This is true if we parsed a packet in this flow
 }
 
-#define AFSK_ADC_INPUT 2
-void AFSK::Decoder::start() {
+void AX25::Decoder::start() {
   // Do this in start to allocate our first packet
   currentPacket = pBuf.makePacket(PACKET_MAX_LEN);
-/*  ASSR &= ~(_BV(EXCLK) | _BV(AS2));
-
-  // Do non-inverting PWM on pin OC2B (arduino pin 3) (p.159).
-  // OC2A (arduino pin 11) stays in normal port operation:
-  // COM2B1=1, COM2B0=0, COM2A1=0, COM2A0=0
-  // Mode 1 - Phase correct PWM
-  TCCR2A = (TCCR2A | _BV(COM2B1)) & ~(_BV(COM2B0) | _BV(COM2A1) | _BV(COM2A0)) |
-           _BV(WGM21) | _BV(WGM20);
-  // No prescaler (p.162)
-  TCCR2B = (TCCR2B & ~(_BV(CS22) | _BV(CS21))) | _BV(CS20) | _BV(WGM22);
-  
-  OCR2A = pow(2,COMPARE_BITS)-1;
-  OCR2B = 0;*/
-  
-  
-  // This lets us use decoding functions that run at the same reference
-  // clock as the DDS.
-  // We use ICR1 as TOP and prescale by 8
-  // Note that this requires the DDS to be started as well
-  TCCR1A = 0;
-  TCCR1B = _BV(CS11) | _BV(WGM13) | _BV(WGM12);
-  ICR1 = ((F_CPU / 8) / 9600) - 1; //TODO: get the actual refclk from dds
-  // NOTE: should divider be 1 or 8?
-  ADMUX = _BV(REFS0) | _BV(ADLAR) | AFSK_ADC_INPUT; // Channel AFSK_ADC_INPUT, shift result left (ADCH used)
-  DDRC &= ~_BV(AFSK_ADC_INPUT);
-  PORTC &= ~_BV(AFSK_ADC_INPUT);
-  DIDR0 |= _BV(AFSK_ADC_INPUT); // disable input buffer for ADC pin
-  ADCSRB = _BV(ADTS2) | _BV(ADTS1) | _BV(ADTS0);
-  ADCSRA = _BV(ADEN) | _BV(ADSC) | _BV(ADATE) | _BV(ADIE) | _BV(ADPS2); // | _BV(ADPS0);
+  afsk.decoderStart();
 }
   
-AFSK::PacketBuffer::PacketBuffer() {
+AX25::PacketBuffer::PacketBuffer() {
   nextPacketIn = 0;
   nextPacketOut = 0;
   inBuffer = 0;
@@ -400,7 +322,7 @@ AFSK::PacketBuffer::PacketBuffer() {
 #endif
 }
 
-unsigned char AFSK::PacketBuffer::readyCount() volatile {
+unsigned char AX25::PacketBuffer::readyCount() volatile {
   unsigned char i;
   unsigned int cnt = 0;
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
@@ -413,9 +335,9 @@ unsigned char AFSK::PacketBuffer::readyCount() volatile {
 }
   
 // Return NULL on empty packet buffers
-AFSK::Packet *AFSK::PacketBuffer::getPacket() volatile {
+AX25::Packet *AX25::PacketBuffer::getPacket() volatile {
   unsigned char i = 0;
-  AFSK::Packet *p = NULL;
+  AX25::Packet *p = NULL;
   
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
     if(inBuffer == 0) {
@@ -438,7 +360,7 @@ AFSK::Packet *AFSK::PacketBuffer::getPacket() volatile {
 }
   
 //void Packet::init(uint8_t *buf, unsigned int dlen, bool freeData) {
-void AFSK::Packet::init(unsigned short dlen) {
+void AX25::Packet::init(unsigned short dlen) {
   //data = (unsigned char *)buf;
   ready = 0;
 #ifdef PACKET_PREALLOCATE
@@ -457,8 +379,8 @@ void AFSK::Packet::init(unsigned short dlen) {
 }
   
 // Allocate a new packet with a data buffer as set
-AFSK::Packet *AFSK::PacketBuffer::makePacket(unsigned short dlen) {
-  AFSK::Packet *p;
+AX25::Packet *AX25::PacketBuffer::makePacket(unsigned short dlen) {
+  AX25::Packet *p;
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
     //Packet *p = findPooledPacket();
 #ifdef PACKET_PREALLOCATE
@@ -475,7 +397,7 @@ AFSK::Packet *AFSK::PacketBuffer::makePacket(unsigned short dlen) {
 }
   
 // Free a packet struct, mainly convenience
-void AFSK::PacketBuffer::freePacket(Packet *p) {
+void AX25::PacketBuffer::freePacket(Packet *p) {
   if(!p)
     return;
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
@@ -495,7 +417,7 @@ void AFSK::PacketBuffer::freePacket(Packet *p) {
 }
   
 // Put a packet onto the buffer array
-bool AFSK::PacketBuffer::putPacket(Packet *p) volatile {
+bool AX25::PacketBuffer::putPacket(Packet *p) volatile {
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
     if(inBuffer >= PACKET_BUFFER_SIZE) {
       return false;
@@ -508,11 +430,11 @@ bool AFSK::PacketBuffer::putPacket(Packet *p) volatile {
 }
   
 // Print a single byte to the data array
-size_t AFSK::Packet::write(uint8_t c) {
+size_t AX25::Packet::write(uint8_t c) {
   return (appendFCS(c)?1:0);
 }
   
-size_t AFSK::Packet::write(const uint8_t *ptr, size_t len) {
+size_t AX25::Packet::write(const uint8_t *ptr, size_t len) {
   size_t i;
   for(i = 0; i < len; ++i)
     if(!appendFCS(ptr[i]))
@@ -522,7 +444,7 @@ size_t AFSK::Packet::write(const uint8_t *ptr, size_t len) {
 
 // Add a callsign, flagged as source, destination, or digi
 // Also tell the routine the SSID to use and if this is the final callsign
-size_t AFSK::Packet::appendCallsign(const char *callsign, uint8_t ssid, bool final) {
+size_t AX25::Packet::appendCallsign(const char *callsign, uint8_t ssid, bool final) {
   uint8_t i;
   for(i = 0; i < strlen(callsign) && i < 6; i++) {
     appendFCS(callsign[i]<<1);
@@ -544,7 +466,7 @@ size_t AFSK::Packet::appendCallsign(const char *callsign, uint8_t ssid, bool fin
 
 #ifdef PACKET_PARSER
 // Process the AX25 frame and turn it into a bunch of useful strings
-bool AFSK::Packet::parsePacket() {
+bool AX25::Packet::parsePacket() {
   uint8_t *d = dataPtr;
   int i;
   
@@ -619,7 +541,7 @@ bool AFSK::Packet::parsePacket() {
 }
 #endif
 
-void AFSK::Packet::printPacket(Stream *s) {
+void AX25::Packet::printPacket(Stream *s) {
   uint8_t i;
 #ifdef PACKET_PARSER
   if(!parsePacket()) {
@@ -722,25 +644,3 @@ void AFSK::Packet::printPacket(Stream *s) {
 #endif
 }
 
-// Determine what we want to do on this ADC tick.
-void AFSK::timer() {
-  static uint8_t tcnt = 0;
-  if(++tcnt == T_BIT && encoder.isSending()) {
-    PORTD |= _BV(6);
-    // Only run the encoder every 8th tick
-    // This is actually DDS RefClk / 1200 = 8, set as T_BIT
-    // A different refclk needs a different value
-    encoder.process();
-    tcnt = 0;
-    PORTD &= ~_BV(6);
-  } else {
-    //decoder.process(((int8_t)(ADCH - 128)));
-    decoder.process((int8_t)(ADCH - 83));
-  }
-}
-
-void AFSK::start(DDS *dds) {
-  afskEnabled = true;
-  encoder.setDDS(dds);
-  decoder.start();
-}
