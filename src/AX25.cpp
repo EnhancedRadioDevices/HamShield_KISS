@@ -13,7 +13,7 @@ volatile unsigned long lastTx = 0;
 volatile unsigned long lastTxEnd = 0;
 volatile unsigned long lastRx = 0;
 
-Bell202 afsk;
+Bell202 afsk_phy;
 
 #ifdef PACKET_PREALLOCATE
 SimpleFIFO<AX25::Packet *,PPOOL_SIZE> preallocPool;
@@ -21,13 +21,13 @@ AX25::Packet preallocPackets[PPOOL_SIZE];
 #endif
 
 
-bool AX25::enabled() { return afsk.enabled(); }
-void AX25::start(DDS *d) { afsk.start(d); }
+bool AX25::enabled() { return afsk_phy.enabled(); }
+void AX25::start(DDS *d) { afsk_phy.start(d); }
 
 // Determine what we want to do on this ADC tick.
 void AX25::timer() {
   static uint8_t tcnt = 0;
-  if(++tcnt == T_BIT && afsk.isSending()) {
+  if(++tcnt == T_BIT && afsk_phy.isSending()) {
     PORTD |= _BV(6);
     // Only run the encoder every 8th tick
     // This is actually DDS RefClk / 1200 = 8, set as T_BIT
@@ -115,15 +115,15 @@ void AX25::Encoder::process() {
 
   // NRZI and AFSK uses toggling 0s, "no change" on 1
   // So, if not a 1, toggle to the opposite tone
-  bool currentTone = afsk.encoderGetTone();
+  bool currentTone = afsk_phy.encoderGetTone();
   if(!currentBit)
     currentTone = !currentTone;
   
-  afsk.encoderSetTone(currentTone);
+  afsk_phy.encoderSetTone(currentTone);
 }
 
 bool AX25::Encoder::start() {
-  if(!done || afsk.isSending()) {
+  if(!done || afsk_phy.isSending()) {
     return false;
   }
   
@@ -144,7 +144,7 @@ bool AX25::Encoder::start() {
   maxTx = 3;
   nextByte = 0;
   
-  afsk.encoderStart();
+  afsk_phy.encoderStart();
   return true;
 }
 
@@ -152,7 +152,7 @@ void AX25::Encoder::stop() {
   randomWait = 0;
   done = true;
   
-  afsk.encoderStop();
+  afsk_phy.encoderStop();
 }
 
 AX25::Decoder::Decoder() {
@@ -210,10 +210,10 @@ bool AX25::HDLCDecode::hdlcParse(bool bit, SimpleFIFO<uint8_t,AFSK_RX_FIFO_LEN> 
 
 // Handle the A/D converter interrupt (hopefully quickly :)
 void AX25::Decoder::process(int8_t adc_val) {
-  bool parse_ready = afsk.decoderProcess(adc_val);  
+  bool parse_ready = afsk_phy.decoderProcess(adc_val);  
     
   if (parse_ready) {
-    hdlc.hdlcParse(!EDGE_FOUND(afsk.found_bits), &rx_fifo); // Process it
+    hdlc.hdlcParse(!EDGE_FOUND(afsk_phy.found_bits), &rx_fifo); // Process it
   }
 }
   
@@ -304,7 +304,7 @@ bool AX25::Decoder::read() {
 void AX25::Decoder::start() {
   // Do this in start to allocate our first packet
   currentPacket = pBuf.makePacket(PACKET_MAX_LEN);
-  afsk.decoderStart();
+  afsk_phy.decoderStart();
 }
   
 AX25::PacketBuffer::PacketBuffer() {
