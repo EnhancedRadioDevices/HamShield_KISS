@@ -2,6 +2,7 @@
 #include "packet.h"
 #include "KISS.h"
 
+
 //AFSK::Packet kissPacket;
 bool inFrame = false;
 uint8_t kissBuffer[PACKET_MAX_LEN];
@@ -76,7 +77,7 @@ void KISS::writePacket(AFSK::Packet *p) {
   io->write(KISS_FEND);
   io->write((uint8_t)0); // Host to TNC port identifier
   for(i = 0; i < p->len-2; i++) {
-    char c = p->getByte(i);
+    unsigned char c = p->getByte(i);
     if(c == KISS_FEND || c == KISS_FESC) {
       io->write(KISS_FESC);
       io->write((c==KISS_FEND?KISS_TFEND:KISS_TFESC));
