@@ -537,7 +537,7 @@ size_t AFSK::Packet::appendCallsign(const char *callsign, uint8_t ssid, bool fin
   if(final) {
     ssidField |= 0b01100001;
   } else {
-    ssidField |= 0b11100000;
+    ssidField |= 0b01100000;
   }
   appendFCS(ssidField);
 }
