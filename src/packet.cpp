@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include "SimpleFIFO.h"
 #include "packet.h"
-#include "dds.h"
+#include <DDS.h>
 #include <util/atomic.h>
 
 #define PHASE_BIT 8
